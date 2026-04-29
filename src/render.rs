@@ -293,7 +293,7 @@ function showProject(key) {
 }
 function applyHash() {
   const h = decodeURIComponent(location.hash.slice(1));
-  if (!h) { showProject(null); return; }
+  if (!h) { showProject(null); document.getElementById('content').scrollTo(0, 0); return; }
   const section = document.getElementById(h);
   if (section && section.classList.contains('file')) {
     const article = section.closest('.proj-view');
@@ -304,6 +304,7 @@ function applyHash() {
     }
   }
   showProject(h);
+  document.getElementById('content').scrollTo(0, 0);
 }
 document.addEventListener('click', e => {
   const b = e.target.closest('button.proj');
