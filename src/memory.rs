@@ -3,7 +3,6 @@ use std::time::SystemTime;
 
 pub struct Project {
     pub real_path: String,
-    #[allow(dead_code)]
     pub encoded: String,
     pub files: Vec<MemoryFile>,
 }

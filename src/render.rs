@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fmt::Write;
 
 use comrak::{markdown_to_html, Options};
@@ -33,6 +34,54 @@ mod tests {
         let html = render_markdown("<script>alert(1)</script>\n\nhello");
         assert!(!html.contains("<script>"));
         assert!(html.contains("hello"));
+    }
+
+    #[test]
+    fn rewrite_intra_links_replaces_known_filenames() {
+        let mut files = HashSet::new();
+        files.insert("foo.md");
+        files.insert("bar.md");
+        let html = "<a href=\"foo.md\">hi</a> <a href=\"http://x.com\">ext</a> <a href=\"bar.md\">b</a>";
+        let result = rewrite_intra_links(html, "-encoded", &files);
+        assert!(result.contains("href=\"#-encoded__foo.md\""));
+        assert!(result.contains("href=\"#-encoded__bar.md\""));
+        assert!(result.contains("href=\"http://x.com\""));
+    }
+
+    #[test]
+    fn rewrite_intra_links_ignores_unknown_filenames() {
+        let files = HashSet::new();
+        let html = "<a href=\"unknown.md\">link</a>";
+        let result = rewrite_intra_links(html, "-encoded", &files);
+        assert_eq!(result, html);
+    }
+
+    #[test]
+    fn render_page_adds_section_ids_and_rewrites_links() {
+        let project = Project {
+            real_path: "/Users/me/foo".into(),
+            encoded: "-Users-me-foo".into(),
+            files: vec![
+                MemoryFile {
+                    name: "MEMORY.md".into(),
+                    frontmatter: vec![],
+                    body: "[link](other.md)".into(),
+                    mtime: std::time::SystemTime::UNIX_EPOCH,
+                },
+                MemoryFile {
+                    name: "other.md".into(),
+                    frontmatter: vec![],
+                    body: "body".into(),
+                    mtime: std::time::SystemTime::UNIX_EPOCH,
+                },
+            ],
+        };
+        let projects = vec![project];
+        let tree = crate::tree::build_tree(&projects);
+        let html = render_page(&tree, &projects);
+        assert!(html.contains("id=\"-Users-me-foo__MEMORY.md\""));
+        assert!(html.contains("id=\"-Users-me-foo__other.md\""));
+        assert!(html.contains("href=\"#-Users-me-foo__other.md\""));
     }
 
     #[test]
@@ -121,6 +170,7 @@ fn render_node(node: &Node, out: &mut String) {
 }
 
 fn render_project(proj: &Project, out: &mut String) {
+    let filenames: HashSet<&str> = proj.files.iter().map(|f| f.name.as_str()).collect();
     write!(
         out,
         "<article class=\"proj-view\" data-key=\"{}\" hidden>",
@@ -129,13 +179,19 @@ fn render_project(proj: &Project, out: &mut String) {
     .unwrap();
     write!(out, "<h1>{}</h1>", html_escape(&proj.real_path)).unwrap();
     for file in &proj.files {
-        render_file(file, out);
+        render_file(file, &proj.encoded, &filenames, out);
     }
     out.push_str("</article>");
 }
 
-fn render_file(file: &MemoryFile, out: &mut String) {
-    out.push_str("<section class=\"file\">");
+fn render_file(file: &MemoryFile, encoded: &str, project_files: &HashSet<&str>, out: &mut String) {
+    write!(
+        out,
+        "<section class=\"file\" id=\"{}__{}\">",
+        html_escape(encoded),
+        html_escape(&file.name),
+    )
+    .unwrap();
     write!(out, "<h2>{}</h2>", html_escape(&file.name)).unwrap();
     if !file.frontmatter.is_empty() {
         out.push_str("<dl class=\"frontmatter\">");
@@ -151,9 +207,20 @@ fn render_file(file: &MemoryFile, out: &mut String) {
         out.push_str("</dl>");
     }
     out.push_str("<div class=\"body\">");
-    out.push_str(&render_markdown(&file.body));
+    let body_html = render_markdown(&file.body);
+    out.push_str(&rewrite_intra_links(&body_html, encoded, project_files));
     out.push_str("</div>");
     out.push_str("</section>");
+}
+
+fn rewrite_intra_links(html: &str, encoded: &str, project_files: &HashSet<&str>) -> String {
+    let mut result = html.to_string();
+    for filename in project_files {
+        let old = format!("href=\"{filename}\"");
+        let new = format!("href=\"#{encoded}__{filename}\"");
+        result = result.replace(&old, &new);
+    }
+    result
 }
 
 pub fn render_markdown(md: &str) -> String {
@@ -219,21 +286,30 @@ function showProject(key) {
   document.querySelectorAll('.proj-view').forEach(el => {
     el.hidden = !key || el.dataset.key !== key;
   });
-  const empty = document.getElementById('empty');
-  empty.hidden = !!key;
+  document.getElementById('empty').hidden = !!key;
   document.querySelectorAll('button.proj').forEach(b => {
     b.classList.toggle('selected', !!key && b.dataset.key === key);
   });
 }
-function selectFromHash() {
+function applyHash() {
   const h = decodeURIComponent(location.hash.slice(1));
-  showProject(h || null);
+  if (!h) { showProject(null); return; }
+  const section = document.getElementById(h);
+  if (section && section.classList.contains('file')) {
+    const article = section.closest('.proj-view');
+    if (article) {
+      showProject(article.dataset.key);
+      requestAnimationFrame(() => section.scrollIntoView({ block: 'start' }));
+      return;
+    }
+  }
+  showProject(h);
 }
 document.addEventListener('click', e => {
   const b = e.target.closest('button.proj');
   if (!b) return;
   location.hash = encodeURIComponent(b.dataset.key);
 });
-window.addEventListener('hashchange', selectFromHash);
-document.addEventListener('DOMContentLoaded', selectFromHash);
+window.addEventListener('hashchange', applyHash);
+document.addEventListener('DOMContentLoaded', applyHash);
 "#;
