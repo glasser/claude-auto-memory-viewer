@@ -12,17 +12,14 @@ fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
 
-fn bind_in_range(start: u16, end: u16) -> Result<(Server, u16), String> {
-    let mut last_err = String::new();
-    for port in start..=end {
-        match Server::http(format!("127.0.0.1:{port}")) {
-            Ok(s) => return Ok((s, port)),
-            Err(e) => last_err = e.to_string(),
-        }
-    }
-    Err(format!(
-        "no free port in {start}..={end}: last error: {last_err}"
-    ))
+fn bind_ephemeral() -> Result<(Server, u16), String> {
+    let server = Server::http("127.0.0.1:0").map_err(|e| e.to_string())?;
+    let port = server
+        .server_addr()
+        .to_ip()
+        .map(|s| s.port())
+        .ok_or_else(|| "no IP socket address available".to_string())?;
+    Ok((server, port))
 }
 
 fn main() {
@@ -34,7 +31,7 @@ fn main() {
         }
     };
 
-    let (server, port) = match bind_in_range(4321, 4400) {
+    let (server, port) = match bind_ephemeral() {
         Ok(t) => t,
         Err(e) => {
             eprintln!("Failed to bind: {e}");
