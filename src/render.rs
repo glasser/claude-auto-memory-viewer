@@ -67,12 +67,14 @@ mod tests {
                     frontmatter: vec![],
                     body: "[link](other.md)".into(),
                     mtime: std::time::SystemTime::UNIX_EPOCH,
+                    is_orphan: false,
                 },
                 MemoryFile {
                     name: "other.md".into(),
                     frontmatter: vec![],
                     body: "body".into(),
                     mtime: std::time::SystemTime::UNIX_EPOCH,
+                    is_orphan: false,
                 },
             ],
         };
@@ -85,6 +87,24 @@ mod tests {
     }
 
     #[test]
+    fn render_page_marks_orphan_sections() {
+        let project = Project {
+            real_path: "/Users/me/foo".into(),
+            encoded: "-Users-me-foo".into(),
+            files: vec![MemoryFile {
+                name: "stray.md".into(),
+                frontmatter: vec![],
+                body: "body".into(),
+                mtime: std::time::SystemTime::UNIX_EPOCH,
+                is_orphan: true,
+            }],
+        };
+        let html = render_page(&[], &[project]);
+        assert!(html.contains("class=\"file orphan\""));
+        assert!(html.contains("(not linked from MEMORY.md)"));
+    }
+
+    #[test]
     fn render_page_includes_tree_and_articles() {
         let project = Project {
             real_path: "/Users/me/foo".into(),
@@ -94,6 +114,7 @@ mod tests {
                 frontmatter: vec![("type".into(), "feedback".into())],
                 body: "# hi".into(),
                 mtime: std::time::SystemTime::UNIX_EPOCH,
+                is_orphan: false,
             }],
         };
         let projects = vec![project];
@@ -185,14 +206,19 @@ fn render_project(proj: &Project, out: &mut String) {
 }
 
 fn render_file(file: &MemoryFile, encoded: &str, project_files: &HashSet<&str>, out: &mut String) {
+    let class = if file.is_orphan { "file orphan" } else { "file" };
     write!(
         out,
-        "<section class=\"file\" id=\"{}__{}\">",
+        "<section class=\"{class}\" id=\"{}__{}\">",
         html_escape(encoded),
         html_escape(&file.name),
     )
     .unwrap();
-    write!(out, "<h2>{}</h2>", html_escape(&file.name)).unwrap();
+    write!(out, "<h2>{}", html_escape(&file.name)).unwrap();
+    if file.is_orphan {
+        out.push_str(" <span class=\"orphan-tag\">(not linked from MEMORY.md)</span>");
+    }
+    out.push_str("</h2>");
     if !file.frontmatter.is_empty() {
         out.push_str("<dl class=\"frontmatter\">");
         for (k, v) in &file.frontmatter {
@@ -269,7 +295,10 @@ button.proj.self { color: #6e6e73; font-style: italic; }
 .proj-view h1 { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 1rem; color: #555; margin: 0 0 1.5rem 0; word-break: break-all; }
 section.file { padding-top: 1rem; margin-top: 1rem; border-top: 1px solid #e5e5ea; }
 section.file:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
+section.file.orphan { background: #fffaeb; border-radius: 4px; padding: 0.75rem 0.75rem 0.5rem 0.75rem; }
+section.file.orphan + section.file { border-top: 1px solid #e5e5ea; }
 section.file h2 { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 1rem; margin: 0 0 0.75rem 0; color: #1d1d1f; }
+.orphan-tag { font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 0.75rem; color: #b45309; font-weight: normal; margin-left: 0.5em; }
 dl.frontmatter { background: #fff8e1; border-left: 3px solid #fbc02d; padding: 0.5rem 0.75rem; margin: 0 0 1rem 0; font-size: 0.85rem; display: grid; grid-template-columns: max-content 1fr; column-gap: 0.75rem; row-gap: 0.25rem; }
 dl.frontmatter dt { font-family: ui-monospace, "SF Mono", Menlo, monospace; color: #6e6e73; }
 dl.frontmatter dd { margin: 0; }

@@ -13,6 +13,7 @@ pub struct MemoryFile {
     pub body: String,
     #[allow(dead_code)]
     pub mtime: SystemTime,
+    pub is_orphan: bool,
 }
 
 #[cfg(test)]
@@ -57,6 +58,77 @@ mod tests {
             fm,
             vec![("url".into(), "https://example.com".into())]
         );
+    }
+
+    fn mem(name: &str, body: &str) -> MemoryFile {
+        MemoryFile {
+            name: name.into(),
+            frontmatter: vec![],
+            body: body.into(),
+            mtime: SystemTime::UNIX_EPOCH,
+            is_orphan: false,
+        }
+    }
+
+    #[test]
+    fn extract_index_picks_up_bare_md_links_in_order() {
+        let body = "- [a](feedback_a.md)\n- [b](feedback_b.md)\n- [c](http://x/y.md)\n";
+        assert_eq!(
+            extract_memory_index_order(body),
+            vec!["feedback_a.md".to_string(), "feedback_b.md".to_string()],
+        );
+    }
+
+    #[test]
+    fn extract_index_strips_anchor_and_dot_slash_prefix() {
+        let body = "[a](./foo.md#section) [b](bar.md)";
+        assert_eq!(
+            extract_memory_index_order(body),
+            vec!["foo.md".to_string(), "bar.md".to_string()],
+        );
+    }
+
+    #[test]
+    fn extract_index_dedups_repeated_references() {
+        let body = "[a](foo.md) [b](foo.md)";
+        assert_eq!(extract_memory_index_order(body), vec!["foo.md".to_string()]);
+    }
+
+    #[test]
+    fn order_files_uses_memory_md_order() {
+        let files = vec![
+            mem("zzz.md", ""),
+            mem("MEMORY.md", "[a](aaa.md) [b](bbb.md)"),
+            mem("aaa.md", ""),
+            mem("bbb.md", ""),
+        ];
+        let ordered = order_files(files);
+        let names: Vec<&str> = ordered.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["MEMORY.md", "aaa.md", "bbb.md", "zzz.md"]);
+    }
+
+    #[test]
+    fn order_files_marks_orphans_when_memory_md_exists() {
+        let files = vec![
+            mem("MEMORY.md", "[a](aaa.md)"),
+            mem("aaa.md", ""),
+            mem("orphan.md", ""),
+        ];
+        let ordered = order_files(files);
+        let by_name: std::collections::HashMap<&str, bool> =
+            ordered.iter().map(|f| (f.name.as_str(), f.is_orphan)).collect();
+        assert_eq!(by_name["MEMORY.md"], false);
+        assert_eq!(by_name["aaa.md"], false);
+        assert_eq!(by_name["orphan.md"], true);
+    }
+
+    #[test]
+    fn order_files_no_memory_md_means_no_orphans() {
+        let files = vec![mem("foo.md", ""), mem("bar.md", "")];
+        let ordered = order_files(files);
+        assert!(ordered.iter().all(|f| !f.is_orphan));
+        let names: Vec<&str> = ordered.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["bar.md", "foo.md"]);
     }
 }
 
@@ -123,7 +195,7 @@ fn scan_memory_files(mem_dir: &Path) -> Vec<MemoryFile> {
         Ok(e) => e,
         Err(_) => return Vec::new(),
     };
-    let mut files: Vec<MemoryFile> = entries
+    let raw: Vec<MemoryFile> = entries
         .flatten()
         .filter_map(|e| {
             let p = e.path();
@@ -152,17 +224,78 @@ fn scan_memory_files(mem_dir: &Path) -> Vec<MemoryFile> {
                 frontmatter,
                 body,
                 mtime,
+                is_orphan: false,
             })
         })
         .collect();
-    files.sort_by(|a, b| {
-        if a.name == "MEMORY.md" {
-            return std::cmp::Ordering::Less;
+    order_files(raw)
+}
+
+pub fn order_files(files: Vec<MemoryFile>) -> Vec<MemoryFile> {
+    let mut by_name: std::collections::HashMap<String, MemoryFile> =
+        files.into_iter().map(|f| (f.name.clone(), f)).collect();
+    let memory_order = match by_name.get("MEMORY.md") {
+        Some(f) => extract_memory_index_order(&f.body),
+        None => Vec::new(),
+    };
+    let has_memory = by_name.contains_key("MEMORY.md");
+
+    let mut sorted = Vec::with_capacity(by_name.len());
+    if let Some(f) = by_name.remove("MEMORY.md") {
+        sorted.push(f);
+    }
+    for name in &memory_order {
+        if let Some(f) = by_name.remove(name) {
+            sorted.push(f);
         }
-        if b.name == "MEMORY.md" {
-            return std::cmp::Ordering::Greater;
+    }
+    let mut remaining: Vec<MemoryFile> = by_name.into_values().collect();
+    remaining.sort_by(|a, b| a.name.cmp(&b.name));
+    for mut f in remaining {
+        if has_memory {
+            f.is_orphan = true;
         }
-        a.name.cmp(&b.name)
-    });
-    files
+        sorted.push(f);
+    }
+    sorted
+}
+
+pub fn extract_memory_index_order(content: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut order = Vec::new();
+    let bytes = content.as_bytes();
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b']' && bytes[i + 1] == b'(' {
+            let start = i + 2;
+            let mut j = start;
+            while j < bytes.len() && bytes[j] != b')' {
+                j += 1;
+            }
+            if j < bytes.len() {
+                if let Some(name) = clean_intra_md_link(&content[start..j]) {
+                    if seen.insert(name.clone()) {
+                        order.push(name);
+                    }
+                }
+                i = j + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    order
+}
+
+fn clean_intra_md_link(url: &str) -> Option<String> {
+    let url = url.trim();
+    if url.is_empty() || url.contains("://") || url.starts_with('/') {
+        return None;
+    }
+    let url = url.split('#').next()?;
+    let url = url.strip_prefix("./").unwrap_or(url);
+    if !url.ends_with(".md") {
+        return None;
+    }
+    Some(url.to_string())
 }
