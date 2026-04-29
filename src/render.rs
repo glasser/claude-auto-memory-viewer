@@ -194,6 +194,7 @@ summary { cursor: pointer; padding: 2px 4px; border-radius: 4px; font-family: ui
 summary:hover { background: #e8e8ed; }
 details > details, details > button.proj { margin-left: 0.9rem; }
 button.proj { display: block; width: 100%; text-align: left; padding: 3px 6px; margin: 1px 0; border: 0; background: transparent; border-radius: 4px; cursor: pointer; font: inherit; font-family: ui-monospace, "SF Mono", Menlo, monospace; color: #1d1d1f; }
+button.proj::before { content: "\2022"; display: inline-block; width: 1em; color: #8e8e93; text-align: center; }
 button.proj:hover { background: #e8e8ed; }
 button.proj.selected { background: #cce4ff; }
 button.proj.self { color: #6e6e73; font-style: italic; }
