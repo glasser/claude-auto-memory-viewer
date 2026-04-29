@@ -81,7 +81,87 @@ pub fn parse_file(content: &str) -> (Vec<(String, String)>, String) {
     (fm, body)
 }
 
-#[allow(dead_code)]
-pub fn scan_all(_home: &Path) -> Vec<Project> {
-    Vec::new()
+pub fn scan_all(home: &Path) -> Vec<Project> {
+    let projects_root = home.join(".claude").join("projects");
+    let claude_json_path = home.join(".claude.json");
+
+    let lookup = std::fs::read_to_string(&claude_json_path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .map(|v| crate::paths::build_lookup(&v))
+        .unwrap_or_default();
+
+    let mut projects = Vec::new();
+    let entries = match std::fs::read_dir(&projects_root) {
+        Ok(e) => e,
+        Err(_) => return projects,
+    };
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let mem_dir = dir.join("memory");
+        if !mem_dir.is_dir() {
+            continue;
+        }
+        let files = scan_memory_files(&mem_dir);
+        if files.is_empty() {
+            continue;
+        }
+        let encoded = entry.file_name().to_string_lossy().into_owned();
+        let real_path = crate::paths::resolve(&encoded, &lookup);
+        projects.push(Project { real_path, encoded, files });
+    }
+    projects.sort_by(|a, b| a.real_path.cmp(&b.real_path));
+    projects
+}
+
+fn scan_memory_files(mem_dir: &Path) -> Vec<MemoryFile> {
+    let entries = match std::fs::read_dir(mem_dir) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+    let mut files: Vec<MemoryFile> = entries
+        .flatten()
+        .filter_map(|e| {
+            let p = e.path();
+            if !p.is_file() {
+                return None;
+            }
+            if p.extension().and_then(|s| s.to_str()) != Some("md") {
+                return None;
+            }
+            let name = p.file_name()?.to_string_lossy().into_owned();
+            let content = match std::fs::read_to_string(&p) {
+                Ok(c) => c,
+                Err(err) => {
+                    eprintln!("skipping {}: {}", p.display(), err);
+                    return None;
+                }
+            };
+            let mtime = e
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            let (frontmatter, body) = parse_file(&content);
+            Some(MemoryFile {
+                name,
+                frontmatter,
+                body,
+                mtime,
+            })
+        })
+        .collect();
+    files.sort_by(|a, b| {
+        if a.name == "MEMORY.md" {
+            return std::cmp::Ordering::Less;
+        }
+        if b.name == "MEMORY.md" {
+            return std::cmp::Ordering::Greater;
+        }
+        a.name.cmp(&b.name)
+    });
+    files
 }
