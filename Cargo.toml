@@ -1,0 +1,9 @@
+[package]
+name = "claude-auto-memory-viewer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+comrak = "0.52.0"
+serde_json = "1.0.149"
+tiny_http = "0.12.0"
